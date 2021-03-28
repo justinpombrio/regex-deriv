@@ -2,9 +2,7 @@
 extern crate test;
 
 mod combinator_regex;
-//mod arena_regex;
-//mod chunk_regex;
+mod deriv_regex;
 
-//pub use arena_regex::*;
-//pub use chunk_regex::*;
 pub use combinator_regex::*;
+pub use deriv_regex::*;

@@ -137,44 +137,45 @@ impl<'a> RegexStorage<'a> {
 }
 
 #[cfg(test)]
-mod tests {
+mod deriv_tests {
     use super::*;
+    use test::Bencher;
 
-    const ANUM: &str = "100100010100010010.10010101000100111";
-    const NOTANUM: &str = "100100010100010010.100101010001001.11";
+    const ANUM: &str = "31415926535897932384626.4338327950288419716939937";
+    const NOTANUM: &str = "31415926535897932384626.4338327.95028841971693993";
 
-    #[test]
-    fn my_regex() {
+    #[bench]
+    fn this_crate(bencher: &mut Bencher) {
         let storage = RegexStorage::new();
         let zero = storage.char('0');
-        let one = storage.char('1');
+        let nonzero = storage.char_set('1', '9');
         let dot = storage.char('.');
         let epsilon = storage.epsilon();
-        let digit = storage.char_set('0', '1');
+        let digit = storage.char_set('0', '9');
         let digits = storage.star(digit);
-        let leading = storage.alt(zero, storage.seq(one, digits));
+        let leading = storage.alt(zero, storage.seq(nonzero, digits));
         let trailing = storage.alt(epsilon, storage.seq(dot, digits));
         let number = storage.seq(leading, trailing);
 
-        assert!(storage.matches("1", number));
-        assert!(storage.matches("1.0", number));
+        assert!(storage.matches("2", number));
+        assert!(storage.matches("2.0", number));
         assert!(!storage.matches(".0", number));
 
-        for _ in 0..1000000 {
+        bencher.iter(|| {
             assert!(storage.matches(ANUM, number));
             assert!(!storage.matches(NOTANUM, number));
-        }
+        })
     }
 
     // Burnt Sushi's Regexes.
     // 20 times faster on this example.
-    #[test]
-    fn his_regex() {
+    #[bench]
+    fn regex_crate(bencher: &mut Bencher) {
         use regex::Regex;
-        let number = Regex::new("^(0|1[01]*)(\\.[01]*)?$").unwrap();
-        for _ in 0..1000000 {
+        let number = Regex::new("^(0|[1-9][0-9]*)(\\.[0-9]*)?$").unwrap();
+        bencher.iter(|| {
             assert!(number.is_match(ANUM));
             assert!(!number.is_match(NOTANUM));
-        }
+        })
     }
 }
