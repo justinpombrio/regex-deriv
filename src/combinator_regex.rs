@@ -22,8 +22,8 @@ pub trait Regex {
         for ch in input.chars() {
             state.advance(ch);
             match state.accepts() {
-                Accepts::Always => return true,
                 Accepts::Never => return false,
+                Accepts::Always => return true,
                 _ => (),
             }
         }
@@ -40,22 +40,18 @@ pub trait Regex {
 /// - The `start()` method adds the empty string to the tracking set.
 /// - The `advance(char)` method appends the char to each string in the tracking set.
 ///
-/// **Requirement.** The `accepts()` method returns `Yes` if this regex accepts _any_ string in its
-/// tracking set, and `No` otherwise. However, it may return `Always
+/// **Requirements.**
 ///
-///
+/// - The `accepts()` method returns `Yes` or `Always` if this regex accepts any of the strings
+/// in its tracking set, and `No` or `Never` otherwise.
+/// - If it returns `Always`, then its tracking set is guaranteed to contain an accepted string
+/// forever, under all possible sequences of `advance`s. This enables short-circuiting
+/// optimizations.
+/// - If it returns `Never`, then its tracking set will _never_ contain an accepted string. This
+/// enables short-circuiting optimizations.
 pub trait RegexState: Debug {
-    /// Add the start state to the state set.
     fn start(&mut self);
-
-    /// Advance
     fn advance(&mut self, ch: char);
-
-    /// Are we in an accepting state?
-    ///
-    /// `Yes` and `No` mean what they sound like. `Always` and `Never`
-    /// mean `Yes/No` with the additional assertion that no sequence of `advance`s can change this
-    /// fact.
     fn accepts(&self) -> Accepts;
 }
 
@@ -583,7 +579,7 @@ mod tests {
     }
 
     #[bench]
-    fn mine(bencher: &mut Bencher) {
+    fn this_crate(bencher: &mut Bencher) {
         use combinators::*;
 
         let integer = alt(one('0'), seq(one('1'), star(oneof("01"))));
@@ -597,9 +593,9 @@ mod tests {
     }
 
     // Burnt Sushi's Regexes.
-    // Only 3 times faster on this example!
+    // It's 6 times faster on this example.
     #[bench]
-    fn his(bencher: &mut Bencher) {
+    fn regex_crate(bencher: &mut Bencher) {
         use regex::Regex;
         let number = Regex::new("^(0|1[01]*)(\\.[01]*)?$").unwrap();
         bencher.iter(|| {
