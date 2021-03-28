@@ -1,6 +1,3 @@
-use std::fmt;
-use std::fmt::Debug;
-
 /// A trait for Regex combinators. The key to combinators is a shared interface.
 ///
 /// This interface allows for `O(NM)` regex parsing. It took me a few attempts to find it. My first
@@ -21,13 +18,8 @@ pub trait Regex {
         state.start();
         for ch in input.chars() {
             state.advance(ch);
-            match state.accepts() {
-                Accepts::Never => return false,
-                Accepts::Always => return true,
-                _ => (),
-            }
         }
-        state.accepts().as_bool()
+        state.accepts()
     }
 }
 
@@ -40,58 +32,19 @@ pub trait Regex {
 /// - The `start()` method adds the empty string to the tracking set.
 /// - The `advance(char)` method appends the char to each string in the tracking set.
 ///
-/// **Requirements.**
-///
-/// - The `accepts()` method returns `Yes` or `Always` if this regex accepts any of the strings
-/// in its tracking set, and `No` or `Never` otherwise.
-/// - If it returns `Always`, then its tracking set is guaranteed to contain an accepted string
-/// forever, under all possible sequences of `advance`s. This enables short-circuiting
-/// optimizations.
-/// - If it returns `Never`, then its tracking set will _never_ contain an accepted string. This
-/// enables short-circuiting optimizations.
-pub trait RegexState: Debug {
+/// **Requirement.** The `accepts()` method returns true iff the `Regex` accepts any of the strings
+/// in its tracking set.
+pub trait RegexState {
     fn start(&mut self);
     fn advance(&mut self, ch: char);
-    fn accepts(&self) -> Accepts;
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Accepts {
-    /// At least one of the states in the NFA state set is accepting.
-    Yes,
-    /// None of the states
-    No,
-    Always,
-    Never,
-}
-
-impl Accepts {
-    fn as_bool(self) -> bool {
-        use Accepts::*;
-
-        match self {
-            Yes | Always => true,
-            No | Never => false,
-        }
-    }
-
-    fn or(self, other: Accepts) -> Accepts {
-        use Accepts::*;
-
-        match (self, other) {
-            (Always, _) | (_, Always) => Always,
-            (Yes, _) | (_, Yes) => Yes,
-            (No, _) | (_, No) => No,
-            (Never, Never) => Never,
-        }
-    }
+    fn accepts(&self) -> bool;
 }
 
 /***************/
 /* SimpleState */
 /***************/
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 enum SimpleState {
     Start,
     End,
@@ -126,14 +79,12 @@ impl SimpleState {
         *self = SimpleState::Neither;
     }
 
-    fn accepts(&self) -> Accepts {
-        use Accepts::*;
+    fn accepts(&self) -> bool {
         use SimpleState::*;
 
         match *self {
-            End | Both => Yes,
-            Start => No,
-            Neither => Never,
+            End | Both => true,
+            Start | Neither => false,
         }
     }
 }
@@ -144,7 +95,6 @@ impl SimpleState {
 
 struct Empty;
 
-#[derive(Debug)]
 struct EmptyState {
     empty: bool,
 }
@@ -166,14 +116,8 @@ impl RegexState for EmptyState {
         self.empty = false;
     }
 
-    fn accepts(&self) -> Accepts {
-        use Accepts::*;
-
-        if self.empty {
-            Yes
-        } else {
-            Never
-        }
+    fn accepts(&self) -> bool {
+        self.empty
     }
 }
 
@@ -183,7 +127,6 @@ impl RegexState for EmptyState {
 
 struct Dot;
 
-#[derive(Debug)]
 struct DotState(SimpleState);
 
 impl Regex for Dot {
@@ -203,7 +146,7 @@ impl RegexState for DotState {
         self.0.advance();
     }
 
-    fn accepts(&self) -> Accepts {
+    fn accepts(&self) -> bool {
         self.0.accepts()
     }
 }
@@ -214,7 +157,6 @@ impl RegexState for DotState {
 
 struct Char(char);
 
-#[derive(Debug)]
 struct CharState {
     ch: char,
     state: SimpleState,
@@ -244,7 +186,7 @@ impl RegexState for CharState {
         }
     }
 
-    fn accepts(&self) -> Accepts {
+    fn accepts(&self) -> bool {
         self.state.accepts()
     }
 }
@@ -255,7 +197,6 @@ impl RegexState for CharState {
 
 struct CharFrom(String);
 
-#[derive(Debug)]
 struct CharFromState {
     charset: String,
     state: SimpleState,
@@ -285,7 +226,7 @@ impl RegexState for CharFromState {
         }
     }
 
-    fn accepts(&self) -> Accepts {
+    fn accepts(&self) -> bool {
         self.state.accepts()
     }
 }
@@ -299,16 +240,6 @@ struct Star<P: Regex>(P);
 struct StarState<P: Regex> {
     init: bool,
     state: P::State,
-}
-
-impl<P: Regex> Debug for StarState<P> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("StarState")
-            .field("accepts", &self.accepts())
-            .field("init", &self.init)
-            .field("state", &self.state)
-            .finish()
-    }
 }
 
 impl<P: Regex> Regex for Star<P> {
@@ -331,20 +262,14 @@ impl<P: Regex> RegexState for StarState<P> {
     fn advance(&mut self, ch: char) {
         self.init = false;
         self.state.advance(ch);
-        if self.state.accepts().as_bool() {
+        if self.state.accepts() {
             self.init = true;
             self.state.start();
         }
     }
 
-    fn accepts(&self) -> Accepts {
-        use Accepts::*;
-
-        if self.init {
-            Yes
-        } else {
-            self.state.accepts()
-        }
+    fn accepts(&self) -> bool {
+        self.init || self.state.accepts()
     }
 }
 
@@ -357,16 +282,6 @@ struct Maybe<P: Regex>(P);
 struct MaybeState<P: Regex> {
     init: bool,
     state: P::State,
-}
-
-impl<P: Regex> Debug for MaybeState<P> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("Maybe")
-            .field("accepts", &self.accepts())
-            .field("init", &self.init)
-            .field("state", &self.state)
-            .finish()
-    }
 }
 
 impl<P: Regex> Regex for Maybe<P> {
@@ -391,12 +306,8 @@ impl<P: Regex> RegexState for MaybeState<P> {
         self.state.advance(ch);
     }
 
-    fn accepts(&self) -> Accepts {
-        if self.init {
-            Accepts::Yes
-        } else {
-            self.state.accepts()
-        }
+    fn accepts(&self) -> bool {
+        self.init || self.state.accepts()
     }
 }
 
@@ -407,16 +318,6 @@ impl<P: Regex> RegexState for MaybeState<P> {
 struct Alt<P: Regex, Q: Regex>(P, Q);
 
 struct AltState<P: Regex, Q: Regex>(P::State, Q::State);
-
-impl<P: Regex, Q: Regex> Debug for AltState<P, Q> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("AltState")
-            .field("accepts", &self.accepts())
-            .field("left", &self.0)
-            .field("right", &self.1)
-            .finish()
-    }
-}
 
 impl<P: Regex, Q: Regex> Regex for Alt<P, Q> {
     type State = AltState<P, Q>;
@@ -437,8 +338,8 @@ impl<P: Regex, Q: Regex> RegexState for AltState<P, Q> {
         self.1.advance(ch);
     }
 
-    fn accepts(&self) -> Accepts {
-        self.0.accepts().or(self.1.accepts())
+    fn accepts(&self) -> bool {
+        self.0.accepts() || self.1.accepts()
     }
 }
 
@@ -449,16 +350,6 @@ impl<P: Regex, Q: Regex> RegexState for AltState<P, Q> {
 struct Seq<P: Regex, Q: Regex>(P, Q);
 
 struct SeqState<P: Regex, Q: Regex>(P::State, Q::State);
-
-impl<P: Regex, Q: Regex> Debug for SeqState<P, Q> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("SeqState")
-            .field("accepts", &self.accepts())
-            .field("first", &self.0)
-            .field("second", &self.1)
-            .finish()
-    }
-}
 
 impl<P: Regex, Q: Regex> Regex for Seq<P, Q> {
     type State = SeqState<P, Q>;
@@ -471,7 +362,7 @@ impl<P: Regex, Q: Regex> Regex for Seq<P, Q> {
 impl<P: Regex, Q: Regex> RegexState for SeqState<P, Q> {
     fn start(&mut self) {
         self.0.start();
-        if self.0.accepts().as_bool() {
+        if self.0.accepts() {
             self.1.start();
         }
     }
@@ -479,12 +370,12 @@ impl<P: Regex, Q: Regex> RegexState for SeqState<P, Q> {
     fn advance(&mut self, ch: char) {
         self.1.advance(ch);
         self.0.advance(ch);
-        if self.0.accepts().as_bool() {
+        if self.0.accepts() {
             self.1.start();
         }
     }
 
-    fn accepts(&self) -> Accepts {
+    fn accepts(&self) -> bool {
         self.1.accepts()
     }
 }
