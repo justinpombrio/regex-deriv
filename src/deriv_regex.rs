@@ -1,5 +1,6 @@
 use typed_arena::Arena;
 
+#[derive(Default)]
 pub struct RegexStorage<'a>(Arena<Regex<'a>>);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
