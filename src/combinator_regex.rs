@@ -3,30 +3,12 @@
 /// This interface allows for `O(NM)` regex parsing. It took me a few attempts to find it. My first
 /// attempts would have served as parser combinator interfaces, which as far as I could tell do
 /// _not_ allow for `O(NM)` regex parsing.
-pub trait Regex {
-    /// The state of a regex, as it is parses an input.
-    type State: RegexState;
-
-    /// Construct the initial, _empty_ state. In NFA terms, this is an empty set of states.
-    fn init_state(&self) -> Self::State;
-
-    /// Does the input match this regex? Note that this is not looking for an occurrence of the
-    /// Regex pattern _somewhere_ in the input; it's specifically checking that the _entire input_
-    /// matches the regex.
-    fn is_match(&self, input: &str) -> bool {
-        let mut state = self.init_state();
-        state.start();
-        for byte in input.bytes() {
-            state.advance(byte);
-            if state.is_dead() {
-                return false;
-            }
-        }
-        state.accepts()
-    }
-}
-
-/// The state of a regex, as it is parses an input. You _can_ think of this `State` as the _set_ of
+///
+/// Users only need call the `Regex.is_match(&str)` method.
+///
+/// # Spec
+///
+/// A `Regex` needs to maintain state as it runs. You _can_ think of this `State` as the _set_ of
 /// NFA states, but you don't _have_ to. It just has to obey this spec:
 ///
 /// **Definition.** At any time, this state is "tracking" a set of strings:
@@ -37,7 +19,9 @@ pub trait Regex {
 ///
 /// **Requirement.** The `accepts()` method returns true iff the `Regex` accepts any of the strings
 /// in its tracking set.
-pub trait RegexState {
+pub trait Regex: Clone {
+    /// Reset to the initial, _empty_ state. In NFA terms, this is an empty set of states.
+    fn initialize(&mut self);
     /// Track an empty string.
     fn start(&mut self);
     /// Append `byte` to every string being tracked.
@@ -47,6 +31,21 @@ pub trait RegexState {
     /// Is it true that both (i) accepts() is false, and (ii) accepts() will remain false for any
     /// possible sequence of `advance`s? This is used for a short-circuiting optimization.
     fn is_dead(&self) -> bool;
+
+    /// Does the input match this regex? Note that this is not looking for an occurrence of the
+    /// Regex pattern _somewhere_ in the input; it's specifically checking that the _entire input_
+    /// matches the regex.
+    fn is_match(&mut self, input: &str) -> bool {
+        self.initialize();
+        self.start();
+        for byte in input.bytes() {
+            self.advance(byte);
+            if self.is_dead() {
+                return false;
+            }
+        }
+        self.accepts()
+    }
 }
 
 /*******************/
@@ -58,39 +57,25 @@ trait Predicate: Copy {
 }
 
 #[derive(Clone, Copy)]
-struct SingleChar<P: Predicate>(P);
-
-impl<P: Predicate> Regex for SingleChar<P> {
-    type State = CharState<P>;
-
-    fn init_state(&self) -> CharState<P> {
-        CharState::new(self.0)
-    }
-}
-
-struct CharState<P: Predicate> {
+struct SingleChar<P: Predicate> {
     predicate: P,
     state: SimpleState,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SimpleState {
-    Start,
-    End,
-    Both,
-    Neither,
-}
-
-impl<P: Predicate> CharState<P> {
-    fn new(predicate: P) -> CharState<P> {
-        CharState {
+impl<P: Predicate> SingleChar<P> {
+    fn new(predicate: P) -> SingleChar<P> {
+        SingleChar {
             predicate,
             state: SimpleState::Neither,
         }
     }
 }
 
-impl<P: Predicate> RegexState for CharState<P> {
+impl<P: Predicate> Regex for SingleChar<P> {
+    fn initialize(&mut self) {
+        self.state = SimpleState::Neither;
+    }
+
     fn start(&mut self) {
         use SimpleState::*;
 
@@ -127,25 +112,65 @@ impl<P: Predicate> RegexState for CharState<P> {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SimpleState {
+    Start,
+    End,
+    Both,
+    Neither,
+}
+
+/***********************/
+/* Single Char Regexes */
+/***********************/
+
+#[derive(Clone, Copy)]
+struct Dot;
+
+impl Predicate for Dot {
+    fn matches(&self, _byte: u8) -> bool {
+        true
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Byte(u8);
+
+impl Predicate for Byte {
+    fn matches(&self, byte: u8) -> bool {
+        self.0 == byte
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ByteRange(u8, u8);
+
+impl Predicate for ByteRange {
+    fn matches(&self, byte: u8) -> bool {
+        self.0 <= byte && byte <= self.1
+    }
+}
+
 /*********/
 /* Empty */
 /*********/
 
-struct Empty;
-
-struct EmptyState {
+#[derive(Clone, Copy)]
+struct Empty {
     empty: bool,
 }
 
-impl Regex for Empty {
-    type State = EmptyState;
-
-    fn init_state(&self) -> EmptyState {
-        EmptyState { empty: true }
+impl Empty {
+    fn new() -> Empty {
+        Empty { empty: false }
     }
 }
 
-impl RegexState for EmptyState {
+impl Regex for Empty {
+    fn initialize(&mut self) {
+        self.empty = false;
+    }
+
     fn start(&mut self) {
         self.empty = true;
     }
@@ -163,119 +188,31 @@ impl RegexState for EmptyState {
     }
 }
 
-/***********************/
-/* Single Char Regexes */
-/***********************/
-
-#[derive(Clone, Copy)]
-struct Dot;
-
-impl Predicate for Dot {
-    fn matches(&self, _byte: u8) -> bool {
-        true
-    }
-}
-
-#[derive(Clone, Copy)]
-struct Char(u8);
-
-impl Predicate for Char {
-    fn matches(&self, byte: u8) -> bool {
-        self.0 == byte
-    }
-}
-
-#[derive(Clone, Copy)]
-struct CharRange(u8, u8);
-
-impl Predicate for CharRange {
-    fn matches(&self, byte: u8) -> bool {
-        self.0 <= byte && byte <= self.1
-    }
-}
-
-/************/
-/* CharFrom */
-/************/
-
-struct CharFrom(String);
-
-struct CharFromState {
-    charset: String,
-    state: SimpleState,
-}
-
-impl Regex for CharFrom {
-    type State = CharFromState;
-
-    fn init_state(&self) -> CharFromState {
-        CharFromState {
-            charset: self.0.clone(),
-            state: SimpleState::Neither,
-        }
-    }
-}
-
-impl RegexState for CharFromState {
-    fn start(&mut self) {
-        use SimpleState::*;
-
-        self.state = match self.state {
-            Start | Neither => Start,
-            End | Both => Both,
-        };
-    }
-
-    fn advance(&mut self, byte: u8) {
-        use SimpleState::*;
-
-        if self.charset.as_bytes().contains(&byte) {
-            self.state = match self.state {
-                Start | Both => Both,
-                End | Neither => Neither,
-            }
-        } else {
-            self.state = Neither;
-        }
-    }
-
-    fn accepts(&self) -> bool {
-        use SimpleState::*;
-
-        match self.state {
-            End | Both => true,
-            Start | Neither => false,
-        }
-    }
-
-    fn is_dead(&self) -> bool {
-        self.state == SimpleState::Neither
-    }
-}
-
 /********/
 /* Star */
 /********/
 
-struct Star<P: Regex>(P);
-
-struct StarState<P: Regex> {
+#[derive(Clone)]
+struct Star<P: Regex> {
     init: bool,
-    state: P::State,
+    state: P,
 }
 
-impl<P: Regex> Regex for Star<P> {
-    type State = StarState<P>;
-
-    fn init_state(&self) -> StarState<P> {
-        StarState {
+impl<P: Regex> Star<P> {
+    fn new(regex: P) -> Star<P> {
+        Star {
             init: false,
-            state: self.0.init_state(),
+            state: regex,
         }
     }
 }
 
-impl<P: Regex> RegexState for StarState<P> {
+impl<P: Regex> Regex for Star<P> {
+    fn initialize(&mut self) {
+        self.init = false;
+        self.state.initialize();
+    }
+
     fn start(&mut self) {
         self.init = true;
         self.state.start();
@@ -303,25 +240,27 @@ impl<P: Regex> RegexState for StarState<P> {
 /* Maybe */
 /*********/
 
-struct Maybe<P: Regex>(P);
-
-struct MaybeState<P: Regex> {
+#[derive(Clone)]
+struct Maybe<P: Regex> {
     init: bool,
-    state: P::State,
+    state: P,
 }
 
-impl<P: Regex> Regex for Maybe<P> {
-    type State = MaybeState<P>;
-
-    fn init_state(&self) -> MaybeState<P> {
-        MaybeState {
+impl<P: Regex> Maybe<P> {
+    fn new(regex: P) -> Maybe<P> {
+        Maybe {
             init: false,
-            state: self.0.init_state(),
+            state: regex,
         }
     }
 }
 
-impl<P: Regex> RegexState for MaybeState<P> {
+impl<P: Regex> Regex for Maybe<P> {
+    fn initialize(&mut self) {
+        self.init = false;
+        self.state.initialize();
+    }
+
     fn start(&mut self) {
         self.init = true;
         self.state.start();
@@ -345,19 +284,15 @@ impl<P: Regex> RegexState for MaybeState<P> {
 /* Alt */
 /*******/
 
+#[derive(Clone)]
 struct Alt<P: Regex, Q: Regex>(P, Q);
 
-struct AltState<P: Regex, Q: Regex>(P::State, Q::State);
-
 impl<P: Regex, Q: Regex> Regex for Alt<P, Q> {
-    type State = AltState<P, Q>;
-
-    fn init_state(&self) -> AltState<P, Q> {
-        AltState(self.0.init_state(), self.1.init_state())
+    fn initialize(&mut self) {
+        self.0.initialize();
+        self.1.initialize();
     }
-}
 
-impl<P: Regex, Q: Regex> RegexState for AltState<P, Q> {
     fn start(&mut self) {
         self.0.start();
         self.1.start();
@@ -381,19 +316,15 @@ impl<P: Regex, Q: Regex> RegexState for AltState<P, Q> {
 /* Seq */
 /*******/
 
+#[derive(Clone)]
 struct Seq<P: Regex, Q: Regex>(P, Q);
 
-struct SeqState<P: Regex, Q: Regex>(P::State, Q::State);
-
 impl<P: Regex, Q: Regex> Regex for Seq<P, Q> {
-    type State = SeqState<P, Q>;
-
-    fn init_state(&self) -> SeqState<P, Q> {
-        SeqState(self.0.init_state(), self.1.init_state())
+    fn initialize(&mut self) {
+        self.0.initialize();
+        self.1.initialize();
     }
-}
 
-impl<P: Regex, Q: Regex> RegexState for SeqState<P, Q> {
     fn start(&mut self) {
         self.0.start();
         if self.0.accepts() {
@@ -421,26 +352,29 @@ impl<P: Regex, Q: Regex> RegexState for SeqState<P, Q> {
 pub mod combinators {
     use super::*;
 
-    pub fn dot() -> impl Regex {
-        SingleChar(Dot)
-    }
-
     pub fn empty() -> impl Regex {
-        Empty
+        Empty::new()
     }
 
-    pub fn one(ch: char) -> impl Regex {
+    pub fn dot() -> impl Regex {
+        SingleChar::new(Dot)
+    }
+
+    pub fn byte(ch: char) -> impl Regex {
         if !ch.is_ascii() {
-            panic!("Only ascii supported");
+            panic!("Char does not fit in a byte: {}", ch);
         }
-        SingleChar(Char(ch as u8))
+        SingleChar::new(Byte(ch as u8))
     }
 
-    pub fn range(min_ch: char, max_ch: char) -> impl Regex {
-        if !min_ch.is_ascii() || !max_ch.is_ascii() {
-            panic!("Only ascii supported");
+    pub fn byte_range(min_ch: char, max_ch: char) -> impl Regex {
+        if !min_ch.is_ascii() {
+            panic!("Char does not fit in a byte: {}", min_ch);
         }
-        SingleChar(CharRange(min_ch as u8, max_ch as u8))
+        if !max_ch.is_ascii() {
+            panic!("Char does not fit in a byte: {}", max_ch);
+        }
+        SingleChar::new(ByteRange(min_ch as u8, max_ch as u8))
     }
 
     pub fn seq(first: impl Regex, second: impl Regex) -> impl Regex {
@@ -452,11 +386,11 @@ pub mod combinators {
     }
 
     pub fn star(regex: impl Regex) -> impl Regex {
-        Star(regex)
+        Star::new(regex)
     }
 
     pub fn maybe(regex: impl Regex) -> impl Regex {
-        Maybe(regex)
+        Maybe::new(regex)
     }
 }
 
@@ -472,7 +406,7 @@ mod tests {
     fn tests() {
         use combinators::*;
 
-        let zero = one('0');
+        let mut zero = byte('0');
         assert!(!zero.is_match(""));
         assert!(zero.is_match("0"));
         assert!(!zero.is_match("1"));
@@ -480,7 +414,7 @@ mod tests {
         assert!(!zero.is_match("01"));
         assert!(!zero.is_match("10"));
 
-        let digit = range('0', '1');
+        let mut digit = byte_range('0', '1');
         assert!(!digit.is_match(""));
         assert!(digit.is_match("0"));
         assert!(digit.is_match("1"));
@@ -488,7 +422,7 @@ mod tests {
         assert!(!digit.is_match("01"));
         assert!(!digit.is_match("00"));
 
-        let zeroes = star(one('0'));
+        let mut zeroes = star(byte('0'));
         assert!(zeroes.is_match(""));
         assert!(zeroes.is_match("0"));
         assert!(zeroes.is_match("00"));
@@ -496,10 +430,10 @@ mod tests {
         assert!(!zeroes.is_match("01"));
         assert!(!zeroes.is_match("0010"));
 
-        let oh_one = seq(one('0'), one('1'));
+        let mut oh_one = seq(byte('0'), byte('1'));
         assert!(oh_one.is_match("01"));
 
-        let integer = alt(one('0'), seq(one('1'), star(range('0', '1'))));
+        let mut integer = alt(byte('0'), seq(byte('1'), star(byte_range('0', '1'))));
         assert!(integer.is_match("0"));
         assert!(!integer.is_match("2"));
         assert!(integer.is_match("10"));
@@ -514,9 +448,12 @@ mod tests {
     fn this_crate(bencher: &mut Bencher) {
         use combinators::*;
 
-        let integer = alt(one('0'), seq(range('1', '9'), star(range('0', '9'))));
-        let tail = seq(one('.'), star(range('0', '9')));
-        let decimal = seq(integer, maybe(tail));
+        let integer = alt(
+            byte('0'),
+            seq(byte_range('1', '9'), star(byte_range('0', '9'))),
+        );
+        let tail = seq(byte('.'), star(byte_range('0', '9')));
+        let mut decimal = seq(integer, maybe(tail));
 
         bencher.iter(|| {
             assert!(decimal.is_match(ANUM));
