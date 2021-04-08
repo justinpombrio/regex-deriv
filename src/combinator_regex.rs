@@ -15,7 +15,7 @@
 ///
 /// - The state constructed by `Regex::init_state()` tracks an empty set of strings.
 /// - The `start()` method adds the empty string to the tracking set.
-/// - The `advance(u8)` method appends the char to each string in the tracking set.
+/// - The `advance(char)` method appends the char to each string in the tracking set.
 ///
 /// **Requirement.** The `accepts()` method returns true iff the `Regex` accepts any of the strings
 /// in its tracking set.
@@ -24,8 +24,8 @@ pub trait Regex: Clone {
     fn initialize(&mut self);
     /// Track an empty string.
     fn start(&mut self);
-    /// Append `byte` to every string being tracked.
-    fn advance(&mut self, byte: u8);
+    /// Append `ch` to every string being tracked.
+    fn advance(&mut self, ch: char);
     /// Does the regex match any of the tracked strings?
     fn accepts(&self) -> bool;
     /// Is it true that both (i) accepts() is false, and (ii) accepts() will remain false for any
@@ -38,8 +38,8 @@ pub trait Regex: Clone {
     fn is_match(&mut self, input: &str) -> bool {
         self.initialize();
         self.start();
-        for byte in input.bytes() {
-            self.advance(byte);
+        for ch in input.chars() {
+            self.advance(ch);
             if self.is_dead() {
                 return false;
             }
@@ -53,7 +53,7 @@ pub trait Regex: Clone {
 /*******************/
 
 trait Predicate: Copy {
-    fn matches(&self, byte: u8) -> bool;
+    fn matches(&self, ch: char) -> bool;
 }
 
 #[derive(Clone, Copy)]
@@ -85,10 +85,10 @@ impl<P: Predicate> Regex for SingleChar<P> {
         }
     }
 
-    fn advance(&mut self, byte: u8) {
+    fn advance(&mut self, ch: char) {
         use SimpleState::*;
 
-        if self.predicate.matches(byte) {
+        if self.predicate.matches(ch) {
             self.state = match self.state {
                 Neither | End => Neither,
                 Both | Start => End,
@@ -128,26 +128,26 @@ enum SimpleState {
 struct Dot;
 
 impl Predicate for Dot {
-    fn matches(&self, _byte: u8) -> bool {
+    fn matches(&self, _ch: char) -> bool {
         true
     }
 }
 
 #[derive(Clone, Copy)]
-struct Byte(u8);
+struct Char(char);
 
-impl Predicate for Byte {
-    fn matches(&self, byte: u8) -> bool {
-        self.0 == byte
+impl Predicate for Char {
+    fn matches(&self, ch: char) -> bool {
+        self.0 == ch
     }
 }
 
 #[derive(Clone, Copy)]
-struct ByteRange(u8, u8);
+struct CharRange(char, char);
 
-impl Predicate for ByteRange {
-    fn matches(&self, byte: u8) -> bool {
-        self.0 <= byte && byte <= self.1
+impl Predicate for CharRange {
+    fn matches(&self, ch: char) -> bool {
+        self.0 <= ch && ch <= self.1
     }
 }
 
@@ -175,7 +175,7 @@ impl Regex for Empty {
         self.empty = true;
     }
 
-    fn advance(&mut self, _: u8) {
+    fn advance(&mut self, _: char) {
         self.empty = false;
     }
 
@@ -218,9 +218,9 @@ impl<P: Regex> Regex for Star<P> {
         self.state.start();
     }
 
-    fn advance(&mut self, byte: u8) {
+    fn advance(&mut self, ch: char) {
         self.init = false;
-        self.state.advance(byte);
+        self.state.advance(ch);
         if self.state.accepts() {
             self.init = true;
             self.state.start();
@@ -266,9 +266,9 @@ impl<P: Regex> Regex for Maybe<P> {
         self.state.start();
     }
 
-    fn advance(&mut self, byte: u8) {
+    fn advance(&mut self, ch: char) {
         self.init = false;
-        self.state.advance(byte);
+        self.state.advance(ch);
     }
 
     fn accepts(&self) -> bool {
@@ -298,9 +298,9 @@ impl<P: Regex, Q: Regex> Regex for Alt<P, Q> {
         self.1.start();
     }
 
-    fn advance(&mut self, byte: u8) {
-        self.0.advance(byte);
-        self.1.advance(byte);
+    fn advance(&mut self, ch: char) {
+        self.0.advance(ch);
+        self.1.advance(ch);
     }
 
     fn accepts(&self) -> bool {
@@ -332,9 +332,9 @@ impl<P: Regex, Q: Regex> Regex for Seq<P, Q> {
         }
     }
 
-    fn advance(&mut self, byte: u8) {
-        self.1.advance(byte);
-        self.0.advance(byte);
+    fn advance(&mut self, ch: char) {
+        self.1.advance(ch);
+        self.0.advance(ch);
         if self.0.accepts() {
             self.1.start();
         }
@@ -360,21 +360,12 @@ pub mod combinators {
         SingleChar::new(Dot)
     }
 
-    pub fn byte(ch: char) -> impl Regex {
-        if !ch.is_ascii() {
-            panic!("Char does not fit in a byte: {}", ch);
-        }
-        SingleChar::new(Byte(ch as u8))
+    pub fn achar(ch: char) -> impl Regex {
+        SingleChar::new(Char(ch))
     }
 
-    pub fn byte_range(min_ch: char, max_ch: char) -> impl Regex {
-        if !min_ch.is_ascii() {
-            panic!("Char does not fit in a byte: {}", min_ch);
-        }
-        if !max_ch.is_ascii() {
-            panic!("Char does not fit in a byte: {}", max_ch);
-        }
-        SingleChar::new(ByteRange(min_ch as u8, max_ch as u8))
+    pub fn char_range(min_ch: char, max_ch: char) -> impl Regex {
+        SingleChar::new(CharRange(min_ch as char, max_ch as char))
     }
 
     pub fn seq(first: impl Regex, second: impl Regex) -> impl Regex {
@@ -399,6 +390,7 @@ mod tests {
     use super::*;
     use test::Bencher;
 
+    // 100 chars in total (50 each)
     const ANUM: &str = "31415926535897932384626.4338327950288419716939937";
     const NOTANUM: &str = "31415926535897932384626.4338327.95028841971693993";
 
@@ -406,7 +398,7 @@ mod tests {
     fn tests() {
         use combinators::*;
 
-        let mut zero = byte('0');
+        let mut zero = achar('0');
         assert!(!zero.is_match(""));
         assert!(zero.is_match("0"));
         assert!(!zero.is_match("1"));
@@ -414,7 +406,7 @@ mod tests {
         assert!(!zero.is_match("01"));
         assert!(!zero.is_match("10"));
 
-        let mut digit = byte_range('0', '1');
+        let mut digit = char_range('0', '1');
         assert!(!digit.is_match(""));
         assert!(digit.is_match("0"));
         assert!(digit.is_match("1"));
@@ -422,7 +414,7 @@ mod tests {
         assert!(!digit.is_match("01"));
         assert!(!digit.is_match("00"));
 
-        let mut zeroes = star(byte('0'));
+        let mut zeroes = star(achar('0'));
         assert!(zeroes.is_match(""));
         assert!(zeroes.is_match("0"));
         assert!(zeroes.is_match("00"));
@@ -430,10 +422,10 @@ mod tests {
         assert!(!zeroes.is_match("01"));
         assert!(!zeroes.is_match("0010"));
 
-        let mut oh_one = seq(byte('0'), byte('1'));
+        let mut oh_one = seq(achar('0'), achar('1'));
         assert!(oh_one.is_match("01"));
 
-        let mut integer = alt(byte('0'), seq(byte('1'), star(byte_range('0', '1'))));
+        let mut integer = alt(achar('0'), seq(achar('1'), star(char_range('0', '1'))));
         assert!(integer.is_match("0"));
         assert!(!integer.is_match("2"));
         assert!(integer.is_match("10"));
@@ -443,16 +435,16 @@ mod tests {
         assert!(!integer.is_match("1101021"));
     }
 
-    // ~4 ns / byte parsed
+    // ~6ns / char
     #[bench]
     fn this_crate(bencher: &mut Bencher) {
         use combinators::*;
 
         let integer = alt(
-            byte('0'),
-            seq(byte_range('1', '9'), star(byte_range('0', '9'))),
+            achar('0'),
+            seq(char_range('1', '9'), star(char_range('0', '9'))),
         );
-        let tail = seq(byte('.'), star(byte_range('0', '9')));
+        let tail = seq(achar('.'), star(char_range('0', '9')));
         let mut decimal = seq(integer, maybe(tail));
 
         bencher.iter(|| {
@@ -462,7 +454,7 @@ mod tests {
     }
 
     // Burnt Sushi's Regexes.
-    // It's 6 times faster on this example.
+    // It's 3 times faster on this example.
     #[bench]
     fn regex_crate(bencher: &mut Bencher) {
         use regex::Regex;
